@@ -25,7 +25,7 @@ Python 3.10+, no dependencies.
 ## Install
 
 ```sh
-pip install git+https://github.com/novasdiego1/silentchecks
+pip install silentchecks
 ```
 
 ## Use
