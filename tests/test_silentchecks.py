@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import sys
 from datetime import UTC, datetime, timedelta
 
@@ -128,7 +129,7 @@ def test_cli_canary_every(tmp_path, capsys):
             "--", *PASS]
     assert main(args) == 0
     assert main(args) == 0
-    rows = [json.loads(x) for x in open(led)]
+    rows = [json.loads(x) for x in Path(led).read_text().splitlines()]
     assert rows[0]["canary"]["caught"] and rows[1]["canary"]["skipped"]
 
 
