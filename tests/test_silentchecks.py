@@ -1,7 +1,7 @@
 import json
-from pathlib import Path
 import sys
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
