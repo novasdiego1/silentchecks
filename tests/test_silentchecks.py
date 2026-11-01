@@ -103,3 +103,48 @@ def test_cli_end_to_end(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "NEVER-RAN" in out and "BLIND" in out and "FAILED" in out
     assert main(["--ledger", led, "status", "--expect", "bad"]) == 2
+
+
+def test_canary_command_knows_it_is_the_canary():
+    probe = [PY, "-c", "import os, sys; sys.exit(1 if os.environ['SILENTCHECKS_CANARY'] == '1' else 0)"]
+    # exits 1 only as canary, 0 as the real check: caught canary, passed check
+    r = check("c", probe, canary=probe)
+    assert r.verdict == "passed" and r.canary["caught"]
+
+
+def test_canary_every_skips_a_recently_caught_canary_and_runs_it_again_later():
+    caught = NOW - timedelta(minutes=10)
+    r = check("c", PASS, canary=PASS, now=NOW, canary_every=timedelta(hours=1), canary_caught_at=caught)
+    assert r.verdict == "passed" and r.canary["skipped"] and "canary skipped" in r.detail
+    old = NOW - timedelta(hours=2)
+    assert check("c", PASS, canary=PASS, now=NOW, canary_every=timedelta(hours=1),
+                 canary_caught_at=old).verdict == "blind"
+    assert check("c", PASS, canary=PASS, now=NOW, canary_every=timedelta(hours=1)).verdict == "blind"  # never caught
+
+
+def test_cli_canary_every(tmp_path, capsys):
+    led = str(tmp_path / "l.jsonl")
+    args = ["--ledger", led, "run", "g", "--canary-every", "1h", "--canary", f"{PY} -c 'raise SystemExit(1)'",
+            "--", *PASS]
+    assert main(args) == 0
+    assert main(args) == 0
+    rows = [json.loads(x) for x in open(led)]
+    assert rows[0]["canary"]["caught"] and rows[1]["canary"]["skipped"]
+
+
+def _append_many(path, n):
+    ledger = Ledger(path)
+    for i in range(n):
+        ledger.append(Run(f"job-{i}", NOW.isoformat(), "passed", 0.1, 0, "x" * 3000, "y" * 500))
+
+
+def test_concurrent_appends_do_not_interleave(tmp_path):
+    import multiprocessing
+
+    path = tmp_path / "l.jsonl"
+    procs = [multiprocessing.Process(target=_append_many, args=(path, 50)) for _ in range(4)]
+    for p in procs:
+        p.start()
+    for p in procs:
+        p.join()
+    assert len(Ledger(path).runs()) == 200  # every line parses

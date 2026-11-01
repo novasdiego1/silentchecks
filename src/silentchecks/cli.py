@@ -8,7 +8,7 @@ import sys
 from dataclasses import asdict
 
 from silentchecks import __version__
-from silentchecks.core import Ledger, check, exit_code, parse_duration, status
+from silentchecks.core import Ledger, check, exit_code, last_caught_canary, parse_duration, status
 
 RUN_EXIT = {"passed": 0, "failed": 1, "error": 2, "blind": 4}
 
@@ -44,6 +44,8 @@ def main(argv: list[str] | None = None) -> int:
     run = sub.add_parser("run", help="run a check, record its verdict")
     run.add_argument("name")
     run.add_argument("--canary", help="command that runs the check on a planted problem; it must fail")
+    run.add_argument("--canary-every", metavar="DURATION",
+                     help="run the canary only if it was not caught within DURATION (for frequent checks)")
     run.add_argument("--timeout", type=float, default=300.0, help="seconds per command (default 300)")
     run.add_argument("--quiet", action="store_true", help="print nothing, only the exit code")
     run.epilog = "Put the check command after --, for example: silentchecks run backup -- ./verify-backup.sh"
@@ -62,8 +64,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "run":
             if not command:
                 ap.error("give the check command after --")
+            every = parse_duration(args.canary_every) if args.canary_every else None
             r = check(args.name, command, canary=shlex.split(args.canary) if args.canary else None,
-                      timeout=args.timeout)
+                      timeout=args.timeout, canary_every=every,
+                      canary_caught_at=last_caught_canary(ledger.runs(), args.name) if every else None)
             ledger.append(r)
             if not args.quiet:
                 print(f"{r.name}: {r.verdict.upper()} ({r.detail})")

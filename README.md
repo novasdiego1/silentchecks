@@ -85,6 +85,16 @@ A canary is the check pointed at something you know is wrong:
 Keep canaries out of real data (separate files, a reserved id, a test table),
 so the safety net never pollutes what it protects.
 
+- **Small, same logic.** The canary runs the same validation code on a tiny
+  planted input, not the full job. A backup check does not need a 10 GB
+  restore to prove it notices an empty file.
+- **Setup and cleanup.** The canary command runs with `SILENTCHECKS_CANARY=1`
+  (the real check gets `0`), so one script can create its fake record, check,
+  and delete it, and refuse to touch real data while in canary mode.
+- **Frequent checks.** `--canary-every 1h` runs the canary only if it was not
+  caught in the last hour; the rows in between say "canary skipped, last caught
+  ..." so nobody mistakes them for proof.
+
 ## States and exit codes
 
 | `run` verdict | Meaning | Exit |
@@ -94,7 +104,8 @@ so the safety net never pollutes what it protects.
 | `error` | the check or the canary could not run (not found, timeout) | 2 |
 | `blind` | the canary passed: the result cannot be trusted | 4 |
 
-`status` adds `never-ran` and `stale`, and exits `1` if any check failed, is
+`status --json` gives the same states for scripts and monitoring. `status` adds
+`never-ran` and `stale`, and exits `1` if any check failed, is
 blind or errored, `3` if any expected check is missing or stale, `0` otherwise
 (`2` on usage errors). A check that passed 20 or more times, never failed and
 never used a canary gets a note: from the outside it cannot be told apart from
@@ -106,8 +117,10 @@ a check that checks nothing.
   good as the planted problem you give it.
 - The ledger is a local file. If the machine that writes it dies, `status` on
   that same machine dies with it: run `status` from somewhere else.
-- No locking: fine for a few checks per minute, not for hundreds of concurrent
-  writers.
+- Rows are appended under `flock` on Linux and macOS, so jobs finishing at the
+  same time do not corrupt the file. On Windows there is no lock.
+- It reads the whole ledger on every `status`; rotate the file if it grows to
+  millions of rows.
 
 ## License
 

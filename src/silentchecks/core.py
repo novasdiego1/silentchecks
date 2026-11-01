@@ -19,6 +19,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
@@ -46,11 +47,15 @@ class Outcome:
     error: str | None = None
 
 
-def execute(argv: Sequence[str], timeout: float) -> Outcome:
+CANARY_ENV = "SILENTCHECKS_CANARY"  # set to "1" for the canary command, so it can set up and clean its fake data
+
+
+def execute(argv: Sequence[str], timeout: float, *, as_canary: bool = False) -> Outcome:
     """Run a command without a shell. Not found and timeout are errors, not failures."""
     t0 = time.monotonic()
+    env = {**os.environ, CANARY_ENV: "1" if as_canary else "0"}
     try:
-        p = subprocess.run(list(argv), capture_output=True, text=True, timeout=timeout, check=False)
+        p = subprocess.run(list(argv), capture_output=True, text=True, timeout=timeout, check=False, env=env)
     except FileNotFoundError:
         return Outcome(None, time.monotonic() - t0, "", f"command not found: {argv[0]}")
     except subprocess.TimeoutExpired as e:
@@ -77,18 +82,29 @@ class Run:
         return datetime.fromisoformat(self.started)
 
 
+def last_caught_canary(runs: list[Run], name: str) -> datetime | None:
+    times = [r.started_at for r in runs if r.name == name and r.canary and r.canary.get("caught")]
+    return max(times) if times else None
+
+
 def check(name: str, argv: Sequence[str], *, canary: Sequence[str] | None = None, timeout: float = 300.0,
-          now: datetime | None = None) -> Run:
+          now: datetime | None = None, canary_every: timedelta | None = None,
+          canary_caught_at: datetime | None = None) -> Run:
     """Run the canary (if any), then the check, and return the verdict.
 
     The canary is a command that runs the same check against a planted problem: a record that must not appear,
     a value that must be rejected, a file that must be missing. It has to FAIL (non-zero exit). If it passes,
     the check cannot see the problem it exists for, and the run is "blind" even if the real check passes.
     """
-    started = (now or datetime.now(UTC)).isoformat(timespec="seconds")
+    now = now or datetime.now(UTC)
+    started = now.isoformat(timespec="seconds")
     canary_info = None
+    if canary and canary_every and canary_caught_at and now - canary_caught_at < canary_every:
+        # Recently proven: skip the canary this time and say so in the row.
+        canary_info = {"skipped": True, "caught_at": canary_caught_at.isoformat(timespec="seconds")}
+        canary = None
     if canary:
-        c = execute(canary, timeout)
+        c = execute(canary, timeout, as_canary=True)
         canary_info = {"exit_code": c.exit_code, "caught": c.exit_code not in (None, 0), "error": c.error}
         if c.exit_code is None:
             return Run(name, started, "error", c.seconds, None, f"canary could not run: {c.error}", c.output,
@@ -104,7 +120,10 @@ def check(name: str, argv: Sequence[str], *, canary: Sequence[str] | None = None
     if r.exit_code is None:
         return Run(name, started, "error", r.seconds, None, r.error or "could not run", r.output, canary_info)
     verdict = "passed" if r.exit_code == 0 else "failed"
-    detail = f"exit {r.exit_code}" + ("; canary caught" if canary_info else "")
+    if canary_info and canary_info.get("skipped"):
+        detail = f"exit {r.exit_code}; canary skipped, last caught {canary_info['caught_at']}"
+    else:
+        detail = f"exit {r.exit_code}" + ("; canary caught" if canary_info else "")
     return Run(name, started, verdict, r.seconds, r.exit_code, detail, r.output, canary_info)
 
 
@@ -115,9 +134,21 @@ class Ledger:
         self.path = Path(path or os.environ.get("SILENTCHECKS_LEDGER") or DEFAULT_LEDGER)
 
     def append(self, run: Run) -> None:
+        """One write per row, under an exclusive lock where the OS has flock (Linux, macOS), so two jobs
+        finishing in the same second cannot interleave their lines."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(asdict(run), ensure_ascii=False) + "\n")
+        line = (json.dumps(asdict(run), ensure_ascii=False) + "\n").encode()
+        with self.path.open("ab") as f:
+            if sys.platform != "win32":
+                import fcntl
+
+                fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                f.write(line)
+                f.flush()
+            finally:
+                if sys.platform != "win32":
+                    fcntl.flock(f, fcntl.LOCK_UN)
 
     def runs(self) -> list[Run]:
         if not self.path.exists():
