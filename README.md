@@ -2,6 +2,13 @@
 
 Make checks prove they can fail, and make "never ran" visible.
 
+**In plain words.** A smoke alarm that never rings could mean no fire, or a
+dead battery, so it has a test button. A night guard who never reports anything
+could mean a quiet night, or a guard who never came, so guards sign a logbook.
+silentchecks gives your automated checks both: a test button (show it a fake
+problem; if it stays quiet, it is broken) and a logbook (a missing signature
+means the check never ran).
+
 Two failures look exactly like success:
 
 - **A check that cannot fail.** A gate that reads the wrong field, compares
